@@ -1,9 +1,9 @@
-# Don't forget to change this file's name before submission.
 import sys
 import os
 import enum
 import socket
 import re
+import _thread
 
 
 class HttpRequestInfo(object):
@@ -69,8 +69,6 @@ class HttpRequestInfo(object):
         debugging and testing.
         """
         http_string = self.method+" "+self.requested_path+" HTTP/1.0\r\n"
-        # print("String: ",http_string)
-        # print("Headers: ",self.headers)
         for i in range(len(self.headers)):
             for j in range(len(self.headers[i])):
                 http_string = http_string + self.headers[i][j]+": "+self.headers[i][j+1]
@@ -169,37 +167,25 @@ def setup_sockets(proxy_port_number):
     while True:
         s.listen(4096)
         conn,addr = s.accept()
+
         print("Address: ",addr)
-        request_to_be_send = do_socket_logic(conn,addr)
+        _thread.start_new_thread(do_socket_logic,(conn,addr,cache),)
+        # request_to_be_send = do_socket_logic(conn,addr)
     
 
-        if(type(request_to_be_send) == HttpErrorResponse):
-            conn.send(request_to_be_send.to_byte_array(request_to_be_send.to_http_string()))
-            conn.close()
-            
-        else:
-            if(request_to_be_send.to_http_string() in cache):
-                conn.send(cache.get(request_to_be_send.to_http_string()))
-                print("In cache!!!!")
-                conn.close()
-            else:
-                s2 = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-                s2.connect((request_to_be_send.requested_host,int(request_to_be_send.requested_port)))
-                s2.send(request_to_be_send.to_byte_array(request_to_be_send.to_http_string()))
-                msg = s2.recv(4096)
-                cache[request_to_be_send.to_http_string()] = msg
-                conn.send((msg))
-                conn.close()
+        
     return None
 
 
-def do_socket_logic(conn,addr):
+def do_socket_logic(conn,addr,cache):
+    
+
     while True:
         
         print(f"connection from {conn} has been established")
         http_raw_data = []
         while True:
-            msg = conn.recv(1024).decode()
+            msg = conn.recv(4096).decode()
             check = msg.split(" ")
             if("http://" in msg.lower() or "www." in msg.lower()):
                 conn.send(bytes("Hit enter twice","utf-8"))
@@ -211,16 +197,27 @@ def do_socket_logic(conn,addr):
             else:
                 http_raw_data.append(msg)
         break
-    request = http_request_pipeline(conn,http_raw_data)
-    return request
-    """
-    Example function for some helper logic, in case you
-    want to be tidy and avoid stuffing the main function.
-
-    Feel free to delete this function.
-    """
-
-
+    request_to_be_send = http_request_pipeline(conn,http_raw_data)
+    if(type(request_to_be_send) == HttpErrorResponse):
+            conn.send(request_to_be_send.to_byte_array(request_to_be_send.to_http_string()))
+            conn.close()
+            
+    else:
+            if(request_to_be_send.to_http_string() in cache):
+                conn.send(cache.get(request_to_be_send.to_http_string()))
+                conn.close()
+            else:
+                s2 = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+                try:
+                    s2.connect((request_to_be_send.requested_host,int(request_to_be_send.requested_port)))
+                    s2.send(request_to_be_send.to_byte_array(request_to_be_send.to_http_string()))
+                    msg = s2.recv(4096)
+                    cache[request_to_be_send.to_http_string()] = msg
+                    conn.send((msg))
+                    conn.close()
+                except:
+                    conn.send(bytes("could not resolve "+request_to_be_send.requested_host+" Name or service not known",'UTF-8'))
+                    conn.close()
     pass
 
 
@@ -266,18 +263,12 @@ def parse_http_request(source_addr, http_raw_data):
     """
     fields = str(http_raw_data).split()
     lines = str(http_raw_data).splitlines()
-    # print("http_raw_data: ",http_raw_data)
-    # print("Lines: ",lines)
-    # print("Fields: ",fields)
+
 
     if(len(lines) == 1):
         lines.append(str(''.join(map(str,http_raw_data))))
-    # if(fields[1].startswith("/")):
     lines = lines[:-1]
 
-    # print("http_raw_data: ",http_raw_data)
-    # print("Lines: ",lines)
-    # print("Fields: ",fields)
 
     headers = []
     host = ""
@@ -297,7 +288,6 @@ def parse_http_request(source_addr, http_raw_data):
                 if(len(portCheck) > 1):
                     port = portCheck[1]
                     host = fields[s+1][:-1*len(port)-1]
-        print(f"Host: {host} Port: {port}")
         lines.pop(0)
         if(len(lines) > 0):
             for l in range(len(lines)):
@@ -311,12 +301,10 @@ def parse_http_request(source_addr, http_raw_data):
             for j in range(len(headers[i])):
                 headers[i][j] = headers[i][j].strip() 
 
-        # print("Headers: ",headers)
         ret = HttpRequestInfo(source_addr,fields[0],host, port, fields[1], headers)
 
     else:
         host,port,path = get_host_and_port(fields[1])
-        print(f"Host: {host} Port: {port}Path: {path}")
         
         ret = HttpRequestInfo(source_addr,fields[0] , host, port, path, None)    
     return ret
@@ -328,9 +316,7 @@ def get_host_and_port(msg):
     port = 80
     path = ""
     splitted_msg = msg.split(":")
-    print(splitted_msg)
     if(len(splitted_msg) == 3):
-        print(splitted_msg)
         temp = re.findall(r'\d+', splitted_msg[2]) 
         x = list(map(int, temp))
         if(len(x) != 0):
@@ -344,13 +330,10 @@ def get_host_and_port(msg):
         x = list(map(int, temp))
         if(len(x) != 0):
             port = x[0]
-            print("Host: ",host)
             host = splitted_msg[0]
-            print("Host: ",host)
             path = splitted_msg[1][len(str(port)):]
         else:
             splitted_msg[1] = splitted_msg[1][2:]
-            print(splitted_msg)
             loc = (splitted_msg[1].find("/"))
             host = splitted_msg[1][:loc]
             path = splitted_msg[1][loc:]
@@ -372,19 +355,14 @@ def check_http_request_validity(http_raw_data) -> HttpRequestState:
     """
     headers = []
     valid_methods = ["GET","PUT","HEAD","POST"]
-    # print("http raw data: ",http_raw_data)
     fields = str(http_raw_data).split()
     if(fields[1].startswith("http://")):
         fields[1] = fields[1][7:]
-    # print(fields)
     lines = str(http_raw_data).splitlines()
     
     if(len(lines) == 1):
         lines.append(str(''.join(map(str,http_raw_data))))
-    # if(fields[1].startswith("/")):
     lines = lines[:-1]
-    # print("lines: ",lines)
-    # print("Fields:",fields)
     
     if(fields[1] == "/" and "Host:" not in fields):
         return HttpRequestState.INVALID_INPUT
@@ -414,8 +392,7 @@ def sanitize_http_request(request_info: HttpRequestInfo):
     returns:
     nothing, but modifies the input object
     """
-    print("[sanitize_http_request]")
-    # print(request_info.headers)
+
     if(request_info.headers == None):
         request_info.headers = list()
         request_info.headers.append(["Host",request_info.requested_host])
@@ -468,10 +445,8 @@ def main():
     above main and outside the classes.
     """
     print("\n\n")
-    print("*" * 50)
     print(f"[LOG] Printing command line arguments [{', '.join(sys.argv)}]")
     check_file_name()
-    print("*" * 50)
 
     # This argument is optional, defaults to 18888
     proxy_port_number = get_arg(1, 18888)
@@ -480,3 +455,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
